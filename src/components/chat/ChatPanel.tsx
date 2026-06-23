@@ -176,23 +176,60 @@ export function ChatPanel() {
           }
         } else if (intent.type === "chart_request") {
           const numCols = dataEngine.columns.filter(c => c.type === "number");
+          const catCols = dataEngine.columns.filter(c => c.type === "string");
           const requestedType = intent.chartType || "bar";
           
           if (numCols.length >= 1) {
-             const xCol = dataEngine.getIdColumn();
+             const idCol = dataEngine.getIdColumn();
              const yCol = numCols[0].name;
+             
+             // For pie/donut, prefer a categorical column with reasonable cardinality as xField
+             let xCol = idCol;
+             if (requestedType === "pie" || requestedType === "donut") {
+               // Find a good categorical column (not the numeric column itself)
+               const bestCatCol = catCols.find(c => 
+                 c.name !== yCol && c.uniqueCount && c.uniqueCount > 1 && c.uniqueCount <= 30
+               ) || catCols.find(c => c.name !== yCol);
+               
+               if (bestCatCol) {
+                 xCol = bestCatCol.name;
+               }
+             }
+             
+             // Ensure xCol and yCol are not the same for meaningful charts
+             if (xCol === yCol) {
+               // Try to find an alternative
+               const altCol = catCols.find(c => c.name !== yCol) 
+                 || dataEngine.columns.find(c => c.name !== yCol);
+               if (altCol) xCol = altCol.name;
+             }
              
              chartConfig = {
               type: requestedType as any,
-              title: `${yCol} by ${xCol}`,
+              title: xCol !== yCol ? `${yCol} by ${xCol}` : `Distribution of ${xCol}`,
               xField: xCol,
-              yField: yCol,
+              yField: xCol !== yCol ? yCol : undefined,
               colorScheme: requestedType === "pie" || requestedType === "donut" ? "categorical" : "single"
              };
              
              if (requestedType === "pie" || requestedType === "donut") {
-               chartData = dataEngine.getRankedSlice(yCol, "top", 15);
-               answer = `Here is a ${requestedType} chart showing the top 15 ${xCol} by ${yCol}.`;
+               if (xCol !== yCol) {
+                 // Aggregate data by xCol, summing yCol values
+                 const aggregated: Record<string, number> = {};
+                 dataEngine.rows.forEach(row => {
+                   const key = String(row[xCol] ?? "Unknown");
+                   aggregated[key] = (aggregated[key] || 0) + (Number(row[yCol]) || 0);
+                 });
+                 chartData = Object.entries(aggregated)
+                   .map(([label, value]) => ({ [xCol]: label, [yCol]: value }))
+                   .sort((a, b) => (b[yCol] as number) - (a[yCol] as number))
+                   .slice(0, 15);
+                 answer = `Here is a ${requestedType} chart showing ${yCol} by ${xCol} (top 15).`;
+               } else {
+                 // Same column: count occurrences
+                 chartData = dataEngine.rows.slice(0, 100);
+                 answer = `Here is a ${requestedType} chart showing the distribution of ${xCol}.`;
+               }
              } else if (requestedType === "scatter" && numCols.length >= 2) {
                chartConfig.xField = numCols[0].name;
                chartConfig.yField = numCols[1].name;
@@ -204,8 +241,22 @@ export function ChatPanel() {
                answer = `Here is a ${requestedType.replace("_", " ")} chart of ${yCol}.`;
              }
           } else {
-            answer = `I need at least one numeric column to draw a chart.`;
+            // No numeric columns — try to build a pie chart by counting categories
+            if ((requestedType === "pie" || requestedType === "donut") && catCols.length > 0) {
+              const bestCol = catCols.find(c => c.uniqueCount && c.uniqueCount > 1 && c.uniqueCount <= 30) || catCols[0];
+              chartConfig = {
+                type: requestedType as any,
+                title: `Distribution of ${bestCol.name}`,
+                xField: bestCol.name,
+                colorScheme: "categorical"
+              };
+              chartData = dataEngine.rows.slice(0, 200);
+              answer = `Here is a ${requestedType} chart showing the distribution of ${bestCol.name}.`;
+            } else {
+              answer = `I need at least one numeric column to draw a chart.`;
+            }
           }
+
         } else if (intent.type === "column_lookup") {
           const colNames = intent.target!.split(/ and |,| & /i).map(c => c.trim()).filter(Boolean);
           const cols = dataEngine.getColumns(colNames).filter(Boolean) as {name: string}[];
