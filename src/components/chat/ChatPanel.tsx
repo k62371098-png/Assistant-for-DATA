@@ -344,14 +344,25 @@ export function ChatPanel() {
       let chartConfig: ChartConfig | undefined;
       let chartData: any[] = [];
       if (parsed.visualization && parsed.visualization.type !== "none") {
+         const vizType = parsed.visualization.type || "bar";
+         const validTypes = ["bar", "horizontal_bar", "line", "area", "scatter", "pie", "donut"];
          chartConfig = {
-           type: parsed.visualization.type === "bar" || parsed.visualization.type === "horizontal_bar" ? parsed.visualization.type : "bar",
+           type: validTypes.includes(vizType) ? vizType : "bar",
            title: parsed.visualization.title || "AI Chart",
            xField: parsed.visualization.xAxis || dataEngine.getIdColumn(),
            yField: parsed.visualization.yAxis,
-           colorScheme: "categorical"
+           colorScheme: vizType === "pie" || vizType === "donut" ? "categorical" : "single"
          };
-         chartData = parsed.visualization.data || [];
+         // Remap AI data format {label, value} to {[xField]: ..., [yField]: ...}
+         const rawData = parsed.visualization.data || [];
+         if (rawData.length > 0 && "label" in rawData[0] && "value" in rawData[0]) {
+           chartData = rawData.map((d: any) => ({
+             [chartConfig!.xField]: d.label,
+             ...(chartConfig!.yField ? { [chartConfig!.yField]: d.value } : {}),
+           }));
+         } else {
+           chartData = rawData;
+         }
       }
 
       updateMessage(datasetId, assistantId, {

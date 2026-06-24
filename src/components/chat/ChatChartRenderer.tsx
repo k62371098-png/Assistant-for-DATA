@@ -1,6 +1,7 @@
 "use client";
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { Download, Table as TableIcon, RefreshCw, BarChart2, LineChart, PieChart, ScatterChart, LayoutDashboard } from "lucide-react";
+import * as echarts from "echarts";
 
 export interface ChartConfig {
   type: "bar" | "horizontal_bar" | "line" | "area" | "scatter" | "pie" | "donut" | "treemap" | "histogram" | "box" | "none";
@@ -19,10 +20,45 @@ export interface ChartRendererProps {
 
 const CATEGORICAL_PALETTE = ["#7F77DD", "#5DCAA5", "#F0997B", "#ED93B1", "#85B7EB", "#FAC775"];
 
+/**
+ * Normalizes chart data: ensures that each data row has keys matching xField and yField.
+ * Handles AI responses that return {label, value} format by remapping them.
+ */
+function normalizeChartData(
+  data: Record<string, unknown>[],
+  xField: string,
+  yField?: string
+): Record<string, unknown>[] {
+  if (!data || data.length === 0) return [];
+
+  const firstRow = data[0];
+
+  // If data already has the expected fields, return as-is
+  if (xField in firstRow) return data;
+
+  // If data uses {label, value} format (common AI response format), remap
+  if ("label" in firstRow && "value" in firstRow) {
+    return data.map((row) => ({
+      [xField]: row.label,
+      ...(yField ? { [yField]: row.value } : {}),
+    }));
+  }
+
+  // If data uses {name, value} format, remap
+  if ("name" in firstRow && "value" in firstRow) {
+    return data.map((row) => ({
+      [xField]: row.name,
+      ...(yField ? { [yField]: row.value } : {}),
+    }));
+  }
+
+  // Last resort: return data as-is and let ECharts handle missing fields
+  return data;
+}
+
 export function ChartRenderer({ config, data, height = 350 }: ChartRendererProps) {
   const chartRef = useRef<HTMLDivElement>(null);
-  const chartInstance = useRef<any>(null);
-  const [echartsReady, setEchartsReady] = useState(false);
+  const chartInstance = useRef<echarts.ECharts | null>(null);
 
   const [activeConfig, setActiveConfig] = useState<ChartConfig>(config);
   
@@ -44,30 +80,9 @@ export function ChartRenderer({ config, data, height = 350 }: ChartRendererProps
     activeConfigRef.current = activeConfig;
   }, [activeConfig]);
 
-  // Poll for ECharts availability
+  // Initialize chart instance
   useEffect(() => {
-    if (typeof window !== "undefined" && (window as any).echarts) {
-      setEchartsReady(true);
-      return;
-    }
-
-    const checkEcharts = setInterval(() => {
-      if (typeof window !== "undefined" && (window as any).echarts) {
-        clearInterval(checkEcharts);
-        setEchartsReady(true);
-      }
-    }, 100);
-
-    return () => {
-      clearInterval(checkEcharts);
-    };
-  }, []);
-
-  // Initialize chart instance once echarts is ready
-  useEffect(() => {
-    if (!echartsReady || !chartRef.current) return;
-
-    const echarts = (window as any).echarts;
+    if (!chartRef.current) return;
     
     // Dispose previous instance if any
     if (chartInstance.current) {
@@ -79,23 +94,33 @@ export function ChartRenderer({ config, data, height = 350 }: ChartRendererProps
     const handleResize = () => chartInstance.current?.resize();
     window.addEventListener("resize", handleResize);
 
+    // Also observe the container for size changes (needed when parent container animates in)
+    const resizeObserver = new ResizeObserver(() => {
+      chartInstance.current?.resize();
+    });
+    resizeObserver.observe(chartRef.current);
+
     return () => {
       window.removeEventListener("resize", handleResize);
+      resizeObserver.disconnect();
       if (chartInstance.current) {
         chartInstance.current.dispose();
         chartInstance.current = null;
       }
     };
-  }, [echartsReady]);
+  }, []);
 
   // Render chart whenever instance, config, or data changes
   const renderChart = useCallback(() => {
-    if (!chartInstance.current || !echartsReady) return;
+    if (!chartInstance.current) return;
     
     const currentConfig = activeConfigRef.current;
-    const currentData = dataRef.current;
+    const rawData = dataRef.current;
     
-    if (currentData.length === 0 || currentConfig.type === "none") return;
+    if (rawData.length === 0 || currentConfig.type === "none") return;
+
+    // Normalize data to ensure correct field mapping
+    const currentData = normalizeChartData(rawData, currentConfig.xField, currentConfig.yField);
 
     let options: any = {
       backgroundColor: "transparent",
@@ -149,12 +174,10 @@ export function ChartRenderer({ config, data, height = 350 }: ChartRendererProps
           itemStyle: { color: CATEGORICAL_PALETTE[0] },
           lineStyle: { width: 3 },
           areaStyle: currentConfig.type === "area" ? {
-            color: typeof window !== "undefined" && (window as any).echarts
-              ? new (window as any).echarts.graphic.LinearGradient(0, 0, 0, 1, [
-                  { offset: 0, color: "rgba(127,119,221,0.5)" },
-                  { offset: 1, color: "rgba(127,119,221,0.0)" }
-                ])
-              : undefined
+            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+              { offset: 0, color: "rgba(127,119,221,0.5)" },
+              { offset: 1, color: "rgba(127,119,221,0.0)" }
+            ])
           } : undefined,
           smooth: true,
           symbolSize: 6
@@ -265,14 +288,14 @@ export function ChartRenderer({ config, data, height = 350 }: ChartRendererProps
     }
 
     chartInstance.current.setOption(options, true);
-  }, [echartsReady]);
+  }, []);
 
-  // Re-render when config, data, or echarts readiness changes
+  // Re-render when config, data changes
   useEffect(() => {
-    if (chartInstance.current && echartsReady) {
+    if (chartInstance.current) {
       renderChart();
     }
-  }, [activeConfig, data, echartsReady, renderChart]);
+  }, [activeConfig, data, renderChart]);
 
   const handleExportPng = () => {
     if (!chartInstance.current) return;

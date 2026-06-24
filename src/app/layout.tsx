@@ -17,9 +17,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <head>
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.4.3/echarts.min.js" defer></script>
-      </head>
+      <head />
       <body className={`${inter.variable} ${jetbrains.variable} font-sans`} suppressHydrationWarning>
         <Providers>{children}</Providers>
       </body>
